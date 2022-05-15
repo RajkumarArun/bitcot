@@ -1,0 +1,33 @@
+version: '3'
+
+services:
+
+  # App Service
+  app:
+    build:
+      context: . 
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8080" 
+    restart: unless-stopped
+    depends_on:
+      - redis 
+    environment: 
+      DEMO_APP_ADDR: 0.0.0.0:8080
+      DEMO_REDIS_ADDR: redis:6379
+    networks: 
+      - backend
+
+  # Redis Service   
+  redis:
+    image: "redis:alpine" 
+    ports:
+      - "6379:6379"    
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    networks:
+      - backend
+
+networks:
+  backend:

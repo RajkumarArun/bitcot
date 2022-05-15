@@ -1,0 +1,152 @@
+---
+
+- hosts: localhost
+  become: true
+  vars:
+    dds_system_tmp: /tmp
+    dds_country: IN
+    dds_state: Tamilnadu
+    dds_locality: chennai
+    dds_organization: DFI
+    dds_host: 127.0.0.1
+    dds_common_name: "{{ dds_host }}"
+    dds_passphrase: Raj123!
+    dds_server_cert_path: /etc/docker
+    dds_client_cert_path: ~/.docker
+    dds_env_shell_path: "~"
+    dds_install_shell: yes
+    dds_restart_docker: no
+    dds_temp_path: "{{ dds_system_tmp }}/ansible_dds"
+    dds_passphrase_file: "{{ dds_temp_path }}/passphrase.txt"
+    dds_csr_form_file: "{{ dds_temp_path }}/csr_form.txt"
+    dds_extfile: "{{ dds_temp_path }}/extfile.cnf"
+
+  tasks:
+   
+  - name: Change hostname of VM to `demo-ops`!
+    hostname:
+      name: "demo-ops"
+    become: yes
+    become_method: "sudo"
+
+  - name: Make sure we have a 'wheel' group
+    group:
+      name: wheel
+      state: present
+  
+  - name: Allow 'wheel' group to have passwordless sudo
+    lineinfile:
+      dest: /etc/sudoers
+      state: present
+      regexp: '^%wheel'
+      line: '%wheel ALL=(ALL) NOPASSWD: ALL'
+      validate: 'visudo -cf %s'
+  
+  - name: Add `demo` (sudoer) user to wheel group
+    user: name=demo groups=wheel append=yes state=present createhome=yes
+  
+#   - name: Set up authorized keys for the `demo` user
+#     authorized_key: user=demo key="{{item}}"
+#     with_file:
+#       - /home/priyankasaggu119/.ssh/id_rsa.pub
+
+  - name: modify nofile soft limit for the user `demo`
+    pam_limits:
+      domain: demo
+      limit_type: soft
+      limit_item: nofile
+      value: 64000
+
+  - name: Set the system's timezone to "Asia/Kolkata"! 
+    timezone:
+      name: Asia/Kolkata
+      rtc: local
+    become: yes
+    become_method: "sudo"
+
+  - service:
+      name: systemd-timesyncd
+      state: started
+      enabled: true
+
+  - name: Install prerequisites for Docker repository
+    apt:
+      name: ['apt-transport-https', 'ca-certificates', 'curl', 'gnupg2', 'software-properties-common']
+      update_cache: yes
+
+  - name: Add Docker GPG key
+    apt_key: url=https://download.docker.com/linux/ubuntu/gpg
+
+  - name: Add Docker APT repository
+    apt_repository:
+      repo: deb [arch=amd64] https://download.docker.com/linux/{{ansible_distribution|lower}} {{ansible_distribution_release}} stable
+
+  - name: Install Docker CE
+    apt:
+      name: ['docker-ce', 'docker-ce-cli', 'containerd.io']
+      update_cache: yes
+
+  - name: Install prerequisites for docker-compose
+    apt:
+      name: ['python3-pip', 'python3-setuptools', 'virtualenv']
+
+  - name: Install docker-compose
+    pip:
+      name: docker-compose
+
+  - name: Configure Docker Daemon to have sane defaults
+    file:
+      state: directory
+      path: "{{ dds_temp_path }}"   
+  
+  - name: Remove passphrase file, if it exists
+    file:
+      state: absent
+      path: "{{ dds_passphrase_file }}" 
+  
+  - name: Create passphrase file
+    file:
+      state: touch
+      path: "{{ dds_passphrase_file }}" 
+  
+  - name: Add passphrase to the file
+    lineinfile:
+      dest: "{{ dds_passphrase_file }}"
+      line: "{{ dds_passphrase }}" 
+  
+  - name: Generate ca-key.pem
+    command: "openssl genrsa -aes256 -passout file:{{ dds_passphrase_file }} -out {{ dds_temp_path }}/ca-key.pem 4096"
+  
+  - name: Generate ca certificate   
+    command: "openssl req -new -x509 -days 365 -key {{ dds_temp_path }}/ca-key.pem -sha256 -out {{ dds_temp_path }}/ca.pem -passin file:{{ dds_passphrase_file }} -subj '/C={{ dds_country }}/ST={{dds_state }}>/L={{ dds_locality }}/O={{ dds_organization }}/CN={{ dds_common_name }}'"
+  
+  - include: generate_server_certs.yml
+  - include: generate_client_certs.yml
+  
+  - name: Remove the temp directory
+    file:
+      state: absent
+      path: "{{ dds_temp_path }}"
+  
+  - name: Install shell script for setting DOCKER env vars
+    template:
+      src: "templates/docker_env.j2"
+      dest: "{{ dds_env_shell_path }}/docker_env.sh"
+      mode: 0755
+    when: dds_install_shell
+  
+  - name: Restart the docker daemon 
+    service:
+      name: docker
+      state: restarted  
+    when: dds_restart_docker
+
+  - name: copy file to remote host
+    copy:
+      src: ../application/
+      dest: /etc/demo-ops     
+ 
+  - name: (Working directory changed to `/etc/demo-ops`) Starting the server...
+    shell: docker-compose up
+    args:
+      chdir: /etc/demo-ops
